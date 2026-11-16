@@ -92,10 +92,10 @@ ALL_COLUMNS = [
     "Account_Name", "Trade_No", "Date", "Entry_Time", "Pair", "Session",
     "Timeframe", "Order_Type", "Setup", "Direction", "Initial_Balance",
     "Lot_Size", "Entry_Price", "SL_Price", "TP_Price", "Trailing_SL",
-    "Exit_Price", "MAE", "MFE", "Risk_Pct", "Planned_RR", "Achieved_RR",
-    "Partial_Booking", "Outcome", "Commission", "PnL", "Checklist_Score",
-    "Rule_Followed", "Mistake_Tag", "Mindset", "In_Trade_Psychology",
-    "Key_Learning", "Notes", "Before_Img", "After_Img"
+    "Exit_Price", "MAE", "MFE", "Risk_Pct", "Risk_USD", "Planned_RR",
+    "Achieved_RR", "Partial_Booking", "Outcome", "Commission", "PnL",
+    "Checklist_Score", "Rule_Followed", "Mistake_Tag", "Mindset",
+    "In_Trade_Psychology", "Key_Learning", "Notes", "Before_Img", "After_Img"
 ]
 
 LOCAL_CSV = "trades.csv"
@@ -136,13 +136,24 @@ def load_data():
                 sheet.append_row(ALL_COLUMNS)
                 return pd.DataFrame(columns=ALL_COLUMNS)
             headers = all_vals[0]
-            if headers != ALL_COLUMNS:
-                sheet.update("A1", [ALL_COLUMNS])
             rows = all_vals[1:]
             if not rows:
+                if headers != ALL_COLUMNS:
+                    sheet.update("A1", [ALL_COLUMNS])
                 return pd.DataFrame(columns=ALL_COLUMNS)
-            padded_rows = [r + [""] * (len(ALL_COLUMNS) - len(r)) for r in rows]
-            df = pd.DataFrame(padded_rows, columns=ALL_COLUMNS)
+            
+            # Map existing rows cleanly by header name if columns changed
+            padded_rows = [r + [""] * max(0, len(headers) - len(r)) for r in rows]
+            raw_df = pd.DataFrame(padded_rows, columns=headers[:len(padded_rows[0])])
+            for col in ALL_COLUMNS:
+                if col not in raw_df.columns:
+                    raw_df[col] = ""
+            df = raw_df[ALL_COLUMNS].copy()
+            
+            if headers != ALL_COLUMNS:
+                sheet.clear()
+                sheet.update("A1", [ALL_COLUMNS] + df.values.tolist())
+                
             df["_sheet_row"] = range(2, len(df) + 2)
             return df
         except Exception as e:
@@ -203,9 +214,12 @@ def upload_image(uploaded_file, prefix, existing_url=""):
 
 df = load_data()
 if not df.empty:
-    num_cols = ["Initial_Balance", "Lot_Size", "Entry_Price", "SL_Price", "TP_Price", "Trailing_SL", "Exit_Price", "MAE", "MFE", "Risk_Pct", "Planned_RR", "Achieved_RR", "Commission", "PnL"]
+    num_cols = ["Initial_Balance", "Lot_Size", "Entry_Price", "SL_Price", "TP_Price", "Trailing_SL", "Exit_Price", "MAE", "MFE", "Risk_Pct", "Risk_USD", "Planned_RR", "Achieved_RR", "Commission", "PnL"]
     for num_col in num_cols:
         df[num_col] = pd.to_numeric(df[num_col], errors="coerce").fillna(0.0)
+    # Backfill Risk_USD for old rows if 0
+    mask_zero_usd = (df["Risk_USD"] == 0.0) & (df["Risk_Pct"] > 0.0) & (df["Initial_Balance"] > 0.0)
+    df.loc[mask_zero_usd, "Risk_USD"] = (df["Initial_Balance"] * df["Risk_Pct"] / 100.0).round(2)
     df["Account_Name"] = df["Account_Name"].replace("", "Default Account")
 
 # --- 3. TOP ACCOUNT SELECTOR & CREATE NEW JOURNAL ---
@@ -321,18 +335,21 @@ with st.sidebar:
         commission = st.number_input("Commission / Swap ($)", value=float(edit_row_data.get("Commission", 0.0)), step=0.5)
         mfe_val = st.number_input("MFE (Max Favorable Pips/$)", value=float(edit_row_data.get("MFE", 0.0)), step=1.0)
 
-    # --- AUTO + MANUAL RISK % CALCULATION ---
+    # --- AUTO + MANUAL RISK % & USD CALCULATION ---
     mult = get_contract_multiplier(pair)
     sl_dist = abs(entry_price - sl_price) if (entry_price > 0 and sl_price > 0) else 0.0
-    auto_risk_dollars = sl_dist * lot_size * mult
-    auto_risk_pct = (auto_risk_dollars / initial_balance * 100.0) if initial_balance > 0 else 0.0
+    auto_risk_dollars = round(sl_dist * lot_size * mult, 2)
+    auto_risk_pct = round((auto_risk_dollars / initial_balance * 100.0), 2) if initial_balance > 0 else 0.0
 
     risk_mode = st.radio("Risk % Mode", ["Auto Calculate Risk %", "Manual Risk %"], horizontal=True)
     if risk_mode == "Auto Calculate Risk %":
-        risk_pct = round(auto_risk_pct, 2)
-        st.info(f"Auto Risk: **{risk_pct:.2f}%** (${auto_risk_dollars:.2f} on ${initial_balance:,.0f} | SL Dist: {sl_dist:.4f})")
+        risk_pct = auto_risk_pct
+        risk_usd = auto_risk_dollars
+        st.info(f"Risked Capital: **${risk_usd:,.2f} ({risk_pct:.2f}%)** on ${initial_balance:,.2f} | SL Dist: {sl_dist:.4f}")
     else:
         risk_pct = st.number_input("Enter Manual Risk (%)", value=float(edit_row_data.get("Risk_Pct", 1.0)), step=0.10, format="%.2f")
+        risk_usd = round(initial_balance * (risk_pct / 100.0), 2)
+        st.info(f"Manual Risked Capital: **${risk_usd:,.2f} ({risk_pct:.2f}%)** on ${initial_balance:,.2f}")
 
     # Live Estimated PnL Preview
     if entry_price > 0 and exit_price > 0 and lot_size > 0:
@@ -411,9 +428,9 @@ with st.sidebar:
                 "Lot_Size": lot_size, "Entry_Price": entry_price,
                 "SL_Price": sl_price, "TP_Price": tp_price, "Trailing_SL": trailing_sl,
                 "Exit_Price": exit_price, "MAE": mae_val, "MFE": mfe_val,
-                "Risk_Pct": risk_pct, "Planned_RR": planned_rr, "Achieved_RR": achieved_rr,
-                "Partial_Booking": partial_booking, "Outcome": outcome,
-                "Commission": commission, "PnL": pnl,
+                "Risk_Pct": risk_pct, "Risk_USD": risk_usd, "Planned_RR": planned_rr,
+                "Achieved_RR": achieved_rr, "Partial_Booking": partial_booking,
+                "Outcome": outcome, "Commission": commission, "PnL": pnl,
                 "Checklist_Score": checklist_score, "Rule_Followed": "Yes" if rule_followed else "No",
                 "Mistake_Tag": mistake_tag, "Mindset": mindset,
                 "In_Trade_Psychology": in_trade_psych, "Key_Learning": key_learning,
@@ -453,22 +470,24 @@ def render_trade_list(sub_df, section_key):
     wins = len(sub_df[sub_df["Outcome"].isin(["Win", "Partial Win", "Trailing SL Win"])])
     wr = (wins / len(exec_df) * 100) if len(exec_df) > 0 else 0
     total_lots = exec_df["Lot_Size"].sum() if len(exec_df) > 0 else 0
-    avg_risk = exec_df["Risk_Pct"].mean() if len(exec_df) > 0 else 0
+    avg_risk_pct = exec_df["Risk_Pct"].mean() if len(exec_df) > 0 else 0
+    avg_risk_usd = exec_df["Risk_USD"].mean() if len(exec_df) > 0 else 0
 
     m1, m2, m3, m4, m5, m6 = st.columns(6)
     m1.metric("Executed Trades", len(exec_df))
     m2.metric("Win Rate", f"{wr:.1f}%")
     m3.metric("Net PnL ($)", f"{sub_df['PnL'].sum():.2f}")
     m4.metric("Total Lots", f"{total_lots:.2f}")
-    m5.metric("Avg Risk %", f"{avg_risk:.2f}%")
+    m5.metric("Avg Risk", f"${avg_risk_usd:.2f} ({avg_risk_pct:.2f}%)")
     m6.metric("Missed Setups", len(sub_df[sub_df["Outcome"] == "Missed Setup"]))
 
     st.divider()
     display_df = sub_df.iloc[::-1]
     for idx, row in display_df.iterrows():
+        r_usd = row["Risk_USD"] if row["Risk_USD"] > 0 else round(row["Initial_Balance"] * row["Risk_Pct"] / 100.0, 2)
         header = (
             f"[{row['Account_Name']} | #{row['Trade_No']}] {row['Date']} ({row['Entry_Time']}) | "
-            f"{row['Pair']} {row['Direction']} ({row['Lot_Size']} Lots | Risk: {row['Risk_Pct']}%) | {row['Outcome']} | PnL: ${row['PnL']}"
+            f"{row['Pair']} {row['Direction']} ({row['Lot_Size']} Lots | Risk: ${r_usd:,.2f} / {row['Risk_Pct']}%) | {row['Outcome']} | PnL: ${row['PnL']}"
         )
         with st.expander(header):
             c1, c2, c3 = st.columns([1.4, 2, 2])
@@ -482,7 +501,7 @@ def render_trade_list(sub_df, section_key):
                     <span class="badge b-blue">{row['Session']} Session</span>
                     <span class="badge b-purple">{row['Order_Type']}</span>
                     <span class="badge b-teal">{row['Timeframe']} | {row['Lot_Size']} Lots</span>
-                    <span class="badge b-amber">Risk: {row['Risk_Pct']}% (Bal: ${row['Initial_Balance']:,.0f})</span>
+                    <span class="badge b-amber">Risk: ${r_usd:,.2f} ({row['Risk_Pct']}%) | Bal: ${row['Initial_Balance']:,.2f}</span>
                     <span class="badge {dir_cls}">{row['Direction']}</span>
                     <span class="badge {out_cls}">{row['Outcome']}</span>
                     <span class="badge {rule_cls}">Rules: {row['Rule_Followed']} ({row['Checklist_Score']})</span>
