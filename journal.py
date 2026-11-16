@@ -42,6 +42,15 @@ st.markdown("""
     font-size: 13px;
     color: #1e293b;
 }
+.psych-box {
+    background-color: #f5f3ff;
+    border-left: 4px solid #8b5cf6;
+    padding: 10px 12px;
+    border-radius: 6px;
+    margin-bottom: 8px;
+    font-size: 13px;
+    color: #3b0764;
+}
 .learning-box {
     background-color: #fffbeb;
     border-left: 4px solid #f59e0b;
@@ -81,11 +90,11 @@ if not st.session_state.authenticated:
 # --- 2. COLUMNS & GOOGLE SHEETS SETUP ---
 ALL_COLUMNS = [
     "Account_Name", "Trade_No", "Date", "Entry_Time", "Pair", "Session",
-    "Timeframe", "Order_Type", "Setup", "Direction", "Entry_Price", "SL_Price",
-    "TP_Price", "Trailing_SL", "Exit_Price", "MAE", "MFE", "Risk_Pct",
-    "Planned_RR", "Achieved_RR", "Partial_Booking", "Outcome", "PnL",
-    "Checklist_Score", "Rule_Followed", "Mistake_Tag", "Mindset",
-    "Key_Learning", "Notes", "Before_Img", "After_Img"
+    "Timeframe", "Order_Type", "Setup", "Direction", "Lot_Size", "Entry_Price",
+    "SL_Price", "TP_Price", "Trailing_SL", "Exit_Price", "MAE", "MFE",
+    "Risk_Pct", "Planned_RR", "Achieved_RR", "Partial_Booking", "Outcome",
+    "Commission", "PnL", "Checklist_Score", "Rule_Followed", "Mistake_Tag",
+    "Mindset", "In_Trade_Psychology", "Key_Learning", "Notes", "Before_Img", "After_Img"
 ]
 
 LOCAL_CSV = "trades.csv"
@@ -181,7 +190,8 @@ def upload_image(uploaded_file, prefix, existing_url=""):
 
 df = load_data()
 if not df.empty:
-    for num_col in ["Entry_Price", "SL_Price", "TP_Price", "Trailing_SL", "Exit_Price", "MAE", "MFE", "Risk_Pct", "Planned_RR", "Achieved_RR", "PnL"]:
+    num_cols = ["Lot_Size", "Entry_Price", "SL_Price", "TP_Price", "Trailing_SL", "Exit_Price", "MAE", "MFE", "Risk_Pct", "Planned_RR", "Achieved_RR", "Commission", "PnL"]
+    for num_col in num_cols:
         df[num_col] = pd.to_numeric(df[num_col], errors="coerce").fillna(0.0)
     df["Account_Name"] = df["Account_Name"].replace("", "Default Account")
 
@@ -201,7 +211,7 @@ with top_c3:
     st.write("")
     st.write("")
     if USE_CLOUD:
-        st.success("Cloud Sync: ACTIVE")
+        st.success("Cloud Sync: LIVE")
     else:
         st.warning("Local Mode")
 
@@ -267,10 +277,22 @@ with st.sidebar:
     ord_opts = ["Limit Order", "Market Execution", "Re-Entry / Scale-In", "Stop Order"]
     curr_ord = edit_row_data.get("Order_Type", "Limit Order")
     order_type = st.selectbox("Order Type", ord_opts, index=ord_opts.index(curr_ord) if curr_ord in ord_opts else 0)
-    setup = st.text_input("Setup & Confluence", value=str(edit_row_data.get("Setup", "")))
+    
+    # Expanded Multi-line Setup & Confluence Box
+    setup = st.text_area(
+        "Setup & Confluence (HTF Bias, Liquidity Sweep, OB/FVG, VSA, Hora/Timing)",
+        value=str(edit_row_data.get("Setup", "")),
+        height=100
+    )
 
     st.markdown("---")
-    st.subheader("Exact Prices, MAE & MFE")
+    st.subheader("Lot Size, Exact Prices, MAE & MFE")
+    l1, l2 = st.columns(2)
+    with l1:
+        lot_size = st.number_input("Lot Size", value=float(edit_row_data.get("Lot_Size", 0.01)), step=0.01, format="%.2f")
+    with l2:
+        risk_pct = st.number_input("Risk (%)", value=float(edit_row_data.get("Risk_Pct", 1.0)), step=0.25)
+
     p1, p2 = st.columns(2)
     with p1:
         entry_price = st.number_input("Entry / Avg Price", value=float(edit_row_data.get("Entry_Price", 0.0)), format="%.4f")
@@ -280,8 +302,15 @@ with st.sidebar:
     with p2:
         sl_price = st.number_input("Stop Loss (SL)", value=float(edit_row_data.get("SL_Price", 0.0)), format="%.4f")
         trailing_sl = st.number_input("Trailing SL Price", value=float(edit_row_data.get("Trailing_SL", 0.0)), format="%.4f")
-        risk_pct = st.number_input("Risk (%)", value=float(edit_row_data.get("Risk_Pct", 1.0)), step=0.25)
+        commission = st.number_input("Commission / Swap ($)", value=float(edit_row_data.get("Commission", 0.0)), step=0.5)
         mfe_val = st.number_input("MFE (Max Favorable Pips/$)", value=float(edit_row_data.get("MFE", 0.0)), step=1.0)
+
+    # Live Estimated PnL Preview
+    if entry_price > 0 and exit_price > 0 and lot_size > 0:
+        diff = (exit_price - entry_price) if direction == "Long" else (entry_price - exit_price)
+        mult = 100.0 if "XAU" in pair else (5000.0 if "XAG" in pair else (1000.0 if "OIL" in pair else 100000.0))
+        est_gross = diff * lot_size * mult
+        st.caption(f"Live Price Move: {diff:+.4f} | Est. Gross PnL (Standard Contract): ${est_gross:+.2f}")
 
     r1, r2 = st.columns(2)
     with r1:
@@ -303,7 +332,7 @@ with st.sidebar:
         curr_out = edit_row_data.get("Outcome", "Running / Open")
         outcome = st.selectbox("Outcome", out_opts, index=out_opts.index(curr_out) if curr_out in out_opts else 0)
     with o2:
-        pnl = st.number_input("Net PnL ($)", value=float(edit_row_data.get("PnL", 0.0)), step=10.0)
+        pnl = st.number_input("Final Net PnL ($)", value=float(edit_row_data.get("PnL", 0.0)), step=10.0)
 
     st.markdown("---")
     st.subheader("Checklist, Psychology & Learning")
@@ -322,33 +351,47 @@ with st.sidebar:
     curr_mind = edit_row_data.get("Mindset", mind_opts[0])
     mindset = st.selectbox("Pre-Trade Mindset", mind_opts, index=mind_opts.index(curr_mind) if curr_mind in mind_opts else 0)
 
-    key_learning = st.text_area("KEY LEARNING FROM THIS TRADE (Mandatory Takeaway)", value=str(edit_row_data.get("Key_Learning", "")))
-    notes = st.text_area("Execution & Re-entry Notes", value=str(edit_row_data.get("Notes", "")))
+    in_trade_psych = st.text_area(
+        "IN-TRADE PSYCHOLOGY (Trade Ke Dauran Kya Feel Hua - Fear, Patience, Urge to Close Early?)",
+        value=str(edit_row_data.get("In_Trade_Psychology", "")),
+        height=100
+    )
+    key_learning = st.text_area(
+        "KEY LEARNING FROM THIS TRADE (Mandatory Takeaway)",
+        value=str(edit_row_data.get("Key_Learning", "")),
+        height=80
+    )
+    notes = st.text_area(
+        "Execution & Re-entry Technical Notes",
+        value=str(edit_row_data.get("Notes", "")),
+        height=80
+    )
 
     before_img = st.file_uploader("Upload Entry Chart", type=["png", "jpg", "jpeg"])
     after_img = st.file_uploader("Upload Exit / Result Chart", type=["png", "jpg", "jpeg"])
 
     btn_label = "Update Existing Trade" if mode == "Edit / Update Existing Trade (Re-entry)" else "Save New Trade"
     if st.button(btn_label, use_container_width=True):
-        with st.spinner("Saving to Cloud Vault..."):
+        with st.spinner("Syncing to Cloud Vault..."):
             b_url = upload_image(before_img, "before", str(edit_row_data.get("Before_Img", "")))
             a_url = upload_image(after_img, "after", str(edit_row_data.get("After_Img", "")))
             row_data = {
                 "Account_Name": acc_display, "Trade_No": t_no_display, "Date": str(date),
                 "Entry_Time": entry_time, "Pair": pair, "Session": session,
                 "Timeframe": timeframe, "Order_Type": order_type, "Setup": setup,
-                "Direction": direction, "Entry_Price": entry_price, "SL_Price": sl_price,
-                "TP_Price": tp_price, "Trailing_SL": trailing_sl, "Exit_Price": exit_price,
-                "MAE": mae_val, "MFE": mfe_val, "Risk_Pct": risk_pct,
-                "Planned_RR": planned_rr, "Achieved_RR": achieved_rr,
-                "Partial_Booking": partial_booking, "Outcome": outcome, "PnL": pnl,
+                "Direction": direction, "Lot_Size": lot_size, "Entry_Price": entry_price,
+                "SL_Price": sl_price, "TP_Price": tp_price, "Trailing_SL": trailing_sl,
+                "Exit_Price": exit_price, "MAE": mae_val, "MFE": mfe_val,
+                "Risk_Pct": risk_pct, "Planned_RR": planned_rr, "Achieved_RR": achieved_rr,
+                "Partial_Booking": partial_booking, "Outcome": outcome,
+                "Commission": commission, "PnL": pnl,
                 "Checklist_Score": checklist_score, "Rule_Followed": "Yes" if rule_followed else "No",
                 "Mistake_Tag": mistake_tag, "Mindset": mindset,
-                "Key_Learning": key_learning, "Notes": notes,
-                "Before_Img": b_url, "After_Img": a_url
+                "In_Trade_Psychology": in_trade_psych, "Key_Learning": key_learning,
+                "Notes": notes, "Before_Img": b_url, "After_Img": a_url
             }
             save_or_update_trade(row_data, target_sheet_row)
-            st.success("Trade Saved / Updated Successfully!")
+            st.success("Trade Synced & Live Dashboard Updated!")
             st.rerun()
 
 # --- 5. FILTER DATA BY ACTIVE ACCOUNT ---
@@ -360,7 +403,7 @@ else:
 # --- 6. MULTI-ASSET TABS ON SAME PAGE ---
 asset_tabs = st.tabs([
     "All Instruments", "XAUUSD (Gold)", "XAGUSD (Silver)",
-    "USOIL (Crude)", "Key Learnings Vault", "Analytics & Funded Tracker"
+    "USOIL (Crude)", "Key Learnings Vault", "Analytics, Position Calc & Funded Tracker"
 ])
 
 def get_outcome_badge_class(outcome_str):
@@ -380,14 +423,14 @@ def render_trade_list(sub_df, section_key):
     exec_df = sub_df[sub_df["Outcome"].isin(["Win", "Partial Win", "Trailing SL Win", "Loss", "Breakeven"])]
     wins = len(sub_df[sub_df["Outcome"].isin(["Win", "Partial Win", "Trailing SL Win"])])
     wr = (wins / len(exec_df) * 100) if len(exec_df) > 0 else 0
-    avg_mae = exec_df["MAE"].mean() if len(exec_df) > 0 else 0
+    total_lots = exec_df["Lot_Size"].sum() if len(exec_df) > 0 else 0
     avg_mfe = exec_df["MFE"].mean() if len(exec_df) > 0 else 0
 
     m1, m2, m3, m4, m5, m6 = st.columns(6)
-    m1.metric("Executed", len(exec_df))
+    m1.metric("Executed Trades", len(exec_df))
     m2.metric("Win Rate", f"{wr:.1f}%")
     m3.metric("Net PnL ($)", f"{sub_df['PnL'].sum():.2f}")
-    m4.metric("Avg MAE", f"{avg_mae:.1f}")
+    m4.metric("Total Lots Traded", f"{total_lots:.2f}")
     m5.metric("Avg MFE", f"{avg_mfe:.1f}")
     m6.metric("Missed Setups", len(sub_df[sub_df["Outcome"] == "Missed Setup"]))
 
@@ -396,7 +439,7 @@ def render_trade_list(sub_df, section_key):
     for idx, row in display_df.iterrows():
         header = (
             f"[{row['Account_Name']} | #{row['Trade_No']}] {row['Date']} ({row['Entry_Time']}) | "
-            f"{row['Pair']} {row['Direction']} | {row['Outcome']} | PnL: ${row['PnL']}"
+            f"{row['Pair']} {row['Direction']} ({row['Lot_Size']} Lots) | {row['Outcome']} | PnL: ${row['PnL']}"
         )
         with st.expander(header):
             c1, c2, c3 = st.columns([1.4, 2, 2])
@@ -409,7 +452,7 @@ def render_trade_list(sub_df, section_key):
                 <div class="badge-row">
                     <span class="badge b-blue">{row['Session']} Session</span>
                     <span class="badge b-purple">{row['Order_Type']}</span>
-                    <span class="badge b-teal">{row['Timeframe']}</span>
+                    <span class="badge b-teal">{row['Timeframe']} | {row['Lot_Size']} Lots</span>
                     <span class="badge {dir_cls}">{row['Direction']}</span>
                     <span class="badge {out_cls}">{row['Outcome']}</span>
                     <span class="badge {rule_cls}">Rules: {row['Rule_Followed']} ({row['Checklist_Score']})</span>
@@ -421,8 +464,8 @@ def render_trade_list(sub_df, section_key):
 
                 prices_html = f"""
                 <div class="info-box">
-                    <b>Setup:</b> {row['Setup']}<br>
-                    <b>Entry:</b> {row['Entry_Price']} &nbsp;|&nbsp; <b>Exit:</b> {row['Exit_Price']}<br>
+                    <b>Setup & Confluence:</b> {row['Setup']}<br><br>
+                    <b>Entry:</b> {row['Entry_Price']} &nbsp;|&nbsp; <b>Exit:</b> {row['Exit_Price']} &nbsp;|&nbsp; <b>Comm:</b> ${row['Commission']}<br>
                     <b>SL:</b> {row['SL_Price']} &nbsp;|&nbsp; <b>TP:</b> {row['TP_Price']} &nbsp;|&nbsp; <b>Trail SL:</b> {row['Trailing_SL']}<br>
                     <b>MAE:</b> {row['MAE']} &nbsp;|&nbsp; <b>MFE:</b> {row['MFE']} &nbsp;|&nbsp; <b>RR:</b> {row['Planned_RR']}R &rarr; {row['Achieved_RR']}R<br>
                     <b>Tag:</b> {row['Mistake_Tag']}
@@ -430,11 +473,14 @@ def render_trade_list(sub_df, section_key):
                 """
                 st.markdown(prices_html, unsafe_allow_html=True)
 
+                if str(row["In_Trade_Psychology"]).strip():
+                    st.markdown(f'<div class="psych-box"><b>In-Trade Psychology:</b> {row["In_Trade_Psychology"]}</div>', unsafe_allow_html=True)
+
                 if str(row["Key_Learning"]).strip():
                     st.markdown(f'<div class="learning-box"><b>Key Learning:</b> {row["Key_Learning"]}</div>', unsafe_allow_html=True)
 
                 if str(row["Notes"]).strip():
-                    st.markdown(f'<div class="notes-box"><b>Notes:</b> {row["Notes"]}</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="notes-box"><b>Technical Notes:</b> {row["Notes"]}</div>', unsafe_allow_html=True)
 
             with c2:
                 st.caption("Entry Chart")
@@ -464,7 +510,7 @@ with asset_tabs[3]:
     render_trade_list(acc_df[acc_df["Pair"].str.contains("USOIL|Crude", case=False, na=False)] if not acc_df.empty else acc_df, "crude")
 
 with asset_tabs[4]:
-    st.subheader("Master Key Learnings & Rules Revision Vault")
+    st.subheader("Master Key Learnings & Psychology Revision Vault")
     if acc_df.empty:
         st.info("No learnings recorded yet.")
     else:
@@ -476,10 +522,26 @@ with asset_tabs[4]:
                 st.markdown(f"- **[{r['Account_Name']} #{r['Trade_No']} | {r['Pair']} | {r['Outcome']}]:** {r['Key_Learning']}")
 
 with asset_tabs[5]:
-    st.subheader(f"Analytics & Funded Monitor ({selected_account})")
+    st.subheader("Built-In Position Size (Lot) Calculator")
+    pc1, pc2, pc3, pc4 = st.columns(4)
+    with pc1:
+        calc_bal = st.number_input("Balance ($)", value=5000.0, step=500.0)
+    with pc2:
+        calc_risk = st.number_input("Risk per Trade (%)", value=1.0, step=0.25)
+    with pc3:
+        calc_sl_pips = st.number_input("Stop Loss (Pips)", value=30.0, step=5.0)
+    with pc4:
+        calc_pip_val = st.number_input("Pip Value per 1.0 Lot ($)", value=10.0, step=1.0)
+        
+    risk_dollars = calc_bal * (calc_risk / 100.0)
+    rec_lots = risk_dollars / (calc_sl_pips * calc_pip_val) if (calc_sl_pips * calc_pip_val) > 0 else 0.0
+    st.success(f"Max Risk Amount: **${risk_dollars:.2f}** | Recommended Lot Size: **{rec_lots:.2f} Lots**")
+
+    st.divider()
+    st.subheader(f"Funded Account Risk & Drawdown Monitor ({selected_account})")
     fc1, fc2, fc3, fc4 = st.columns(4)
     with fc1:
-        acc_size = st.number_input("Account Size ($)", value=5000.0, step=1000.0)
+        acc_size = st.number_input("Challenge Account Size ($)", value=5000.0, step=1000.0)
     with fc2:
         target_pct = st.number_input("Profit Target (%)", value=8.0, step=1.0)
     with fc3:
@@ -493,6 +555,9 @@ with asset_tabs[5]:
     today_str = str(datetime.today().date())
     today_pnl = acc_df[acc_df["Date"] == today_str]["PnL"].sum() if not acc_df.empty else 0.0
     daily_limit = acc_size * (daily_dd_pct / 100.0)
+
+    if today_pnl <= -(daily_limit * 0.8) and daily_limit > 0:
+        st.error(f"WARNING: Today's Loss (${today_pnl:.2f}) has reached 80%+ of your Daily Drawdown Limit (${daily_limit:.2f}). Stop trading for today!")
 
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("Account Balance", f"${acc_size + net_pnl:,.2f}", f"${net_pnl:,.2f}")
