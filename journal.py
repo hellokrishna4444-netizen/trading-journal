@@ -90,17 +90,30 @@ if not st.session_state.authenticated:
 # --- 2. COLUMNS & GOOGLE SHEETS SETUP ---
 ALL_COLUMNS = [
     "Account_Name", "Trade_No", "Date", "Entry_Time", "Pair", "Session",
-    "Timeframe", "Order_Type", "Setup", "Direction", "Lot_Size", "Entry_Price",
-    "SL_Price", "TP_Price", "Trailing_SL", "Exit_Price", "MAE", "MFE",
-    "Risk_Pct", "Planned_RR", "Achieved_RR", "Partial_Booking", "Outcome",
-    "Commission", "PnL", "Checklist_Score", "Rule_Followed", "Mistake_Tag",
-    "Mindset", "In_Trade_Psychology", "Key_Learning", "Notes", "Before_Img", "After_Img"
+    "Timeframe", "Order_Type", "Setup", "Direction", "Initial_Balance",
+    "Lot_Size", "Entry_Price", "SL_Price", "TP_Price", "Trailing_SL",
+    "Exit_Price", "MAE", "MFE", "Risk_Pct", "Planned_RR", "Achieved_RR",
+    "Partial_Booking", "Outcome", "Commission", "PnL", "Checklist_Score",
+    "Rule_Followed", "Mistake_Tag", "Mindset", "In_Trade_Psychology",
+    "Key_Learning", "Notes", "Before_Img", "After_Img"
 ]
 
 LOCAL_CSV = "trades.csv"
 IMG_DIR = "screenshots"
 os.makedirs(IMG_DIR, exist_ok=True)
 USE_CLOUD = "gcp_service_account" in st.secrets and "sheet_url" in st.secrets
+
+def get_contract_multiplier(pair_name):
+    p = str(pair_name).upper()
+    if "XAU" in p:
+        return 100.0
+    elif "XAG" in p:
+        return 5000.0
+    elif "OIL" in p:
+        return 1000.0
+    elif "BTC" in p or "EQUITY" in p:
+        return 1.0
+    return 100000.0
 
 @st.cache_resource
 def get_gsheet():
@@ -190,7 +203,7 @@ def upload_image(uploaded_file, prefix, existing_url=""):
 
 df = load_data()
 if not df.empty:
-    num_cols = ["Lot_Size", "Entry_Price", "SL_Price", "TP_Price", "Trailing_SL", "Exit_Price", "MAE", "MFE", "Risk_Pct", "Planned_RR", "Achieved_RR", "Commission", "PnL"]
+    num_cols = ["Initial_Balance", "Lot_Size", "Entry_Price", "SL_Price", "TP_Price", "Trailing_SL", "Exit_Price", "MAE", "MFE", "Risk_Pct", "Planned_RR", "Achieved_RR", "Commission", "PnL"]
     for num_col in num_cols:
         df[num_col] = pd.to_numeric(df[num_col], errors="coerce").fillna(0.0)
     df["Account_Name"] = df["Account_Name"].replace("", "Default Account")
@@ -278,20 +291,23 @@ with st.sidebar:
     curr_ord = edit_row_data.get("Order_Type", "Limit Order")
     order_type = st.selectbox("Order Type", ord_opts, index=ord_opts.index(curr_ord) if curr_ord in ord_opts else 0)
     
-    # Expanded Multi-line Setup & Confluence Box
     setup = st.text_area(
-        "Setup & Confluence (HTF Bias, Liquidity Sweep, OB/FVG, VSA, Hora/Timing)",
+        "Setup & Confluence (HTF Bias, Liquidity Sweep, OB/FVG, VSA, Timing)",
         value=str(edit_row_data.get("Setup", "")),
         height=100
     )
 
     st.markdown("---")
-    st.subheader("Lot Size, Exact Prices, MAE & MFE")
-    l1, l2 = st.columns(2)
-    with l1:
+    st.subheader("Balance, Lot Size & Exact Prices")
+    
+    b1, b2 = st.columns(2)
+    with b1:
+        default_bal = float(edit_row_data.get("Initial_Balance", 5000.0))
+        if default_bal == 0.0:
+            default_bal = 5000.0
+        initial_balance = st.number_input("Initial Balance ($)", value=default_bal, step=500.0)
+    with b2:
         lot_size = st.number_input("Lot Size", value=float(edit_row_data.get("Lot_Size", 0.01)), step=0.01, format="%.2f")
-    with l2:
-        risk_pct = st.number_input("Risk (%)", value=float(edit_row_data.get("Risk_Pct", 1.0)), step=0.25)
 
     p1, p2 = st.columns(2)
     with p1:
@@ -305,12 +321,24 @@ with st.sidebar:
         commission = st.number_input("Commission / Swap ($)", value=float(edit_row_data.get("Commission", 0.0)), step=0.5)
         mfe_val = st.number_input("MFE (Max Favorable Pips/$)", value=float(edit_row_data.get("MFE", 0.0)), step=1.0)
 
+    # --- AUTO + MANUAL RISK % CALCULATION ---
+    mult = get_contract_multiplier(pair)
+    sl_dist = abs(entry_price - sl_price) if (entry_price > 0 and sl_price > 0) else 0.0
+    auto_risk_dollars = sl_dist * lot_size * mult
+    auto_risk_pct = (auto_risk_dollars / initial_balance * 100.0) if initial_balance > 0 else 0.0
+
+    risk_mode = st.radio("Risk % Mode", ["Auto Calculate Risk %", "Manual Risk %"], horizontal=True)
+    if risk_mode == "Auto Calculate Risk %":
+        risk_pct = round(auto_risk_pct, 2)
+        st.info(f"Auto Risk: **{risk_pct:.2f}%** (${auto_risk_dollars:.2f} on ${initial_balance:,.0f} | SL Dist: {sl_dist:.4f})")
+    else:
+        risk_pct = st.number_input("Enter Manual Risk (%)", value=float(edit_row_data.get("Risk_Pct", 1.0)), step=0.10, format="%.2f")
+
     # Live Estimated PnL Preview
     if entry_price > 0 and exit_price > 0 and lot_size > 0:
         diff = (exit_price - entry_price) if direction == "Long" else (entry_price - exit_price)
-        mult = 100.0 if "XAU" in pair else (5000.0 if "XAG" in pair else (1000.0 if "OIL" in pair else 100000.0))
         est_gross = diff * lot_size * mult
-        st.caption(f"Live Price Move: {diff:+.4f} | Est. Gross PnL (Standard Contract): ${est_gross:+.2f}")
+        st.caption(f"Live Price Move: {diff:+.4f} | Est. Gross PnL: ${est_gross:+.2f}")
 
     r1, r2 = st.columns(2)
     with r1:
@@ -379,7 +407,8 @@ with st.sidebar:
                 "Account_Name": acc_display, "Trade_No": t_no_display, "Date": str(date),
                 "Entry_Time": entry_time, "Pair": pair, "Session": session,
                 "Timeframe": timeframe, "Order_Type": order_type, "Setup": setup,
-                "Direction": direction, "Lot_Size": lot_size, "Entry_Price": entry_price,
+                "Direction": direction, "Initial_Balance": initial_balance,
+                "Lot_Size": lot_size, "Entry_Price": entry_price,
                 "SL_Price": sl_price, "TP_Price": tp_price, "Trailing_SL": trailing_sl,
                 "Exit_Price": exit_price, "MAE": mae_val, "MFE": mfe_val,
                 "Risk_Pct": risk_pct, "Planned_RR": planned_rr, "Achieved_RR": achieved_rr,
@@ -424,14 +453,14 @@ def render_trade_list(sub_df, section_key):
     wins = len(sub_df[sub_df["Outcome"].isin(["Win", "Partial Win", "Trailing SL Win"])])
     wr = (wins / len(exec_df) * 100) if len(exec_df) > 0 else 0
     total_lots = exec_df["Lot_Size"].sum() if len(exec_df) > 0 else 0
-    avg_mfe = exec_df["MFE"].mean() if len(exec_df) > 0 else 0
+    avg_risk = exec_df["Risk_Pct"].mean() if len(exec_df) > 0 else 0
 
     m1, m2, m3, m4, m5, m6 = st.columns(6)
     m1.metric("Executed Trades", len(exec_df))
     m2.metric("Win Rate", f"{wr:.1f}%")
     m3.metric("Net PnL ($)", f"{sub_df['PnL'].sum():.2f}")
-    m4.metric("Total Lots Traded", f"{total_lots:.2f}")
-    m5.metric("Avg MFE", f"{avg_mfe:.1f}")
+    m4.metric("Total Lots", f"{total_lots:.2f}")
+    m5.metric("Avg Risk %", f"{avg_risk:.2f}%")
     m6.metric("Missed Setups", len(sub_df[sub_df["Outcome"] == "Missed Setup"]))
 
     st.divider()
@@ -439,7 +468,7 @@ def render_trade_list(sub_df, section_key):
     for idx, row in display_df.iterrows():
         header = (
             f"[{row['Account_Name']} | #{row['Trade_No']}] {row['Date']} ({row['Entry_Time']}) | "
-            f"{row['Pair']} {row['Direction']} ({row['Lot_Size']} Lots) | {row['Outcome']} | PnL: ${row['PnL']}"
+            f"{row['Pair']} {row['Direction']} ({row['Lot_Size']} Lots | Risk: {row['Risk_Pct']}%) | {row['Outcome']} | PnL: ${row['PnL']}"
         )
         with st.expander(header):
             c1, c2, c3 = st.columns([1.4, 2, 2])
@@ -453,10 +482,10 @@ def render_trade_list(sub_df, section_key):
                     <span class="badge b-blue">{row['Session']} Session</span>
                     <span class="badge b-purple">{row['Order_Type']}</span>
                     <span class="badge b-teal">{row['Timeframe']} | {row['Lot_Size']} Lots</span>
+                    <span class="badge b-amber">Risk: {row['Risk_Pct']}% (Bal: ${row['Initial_Balance']:,.0f})</span>
                     <span class="badge {dir_cls}">{row['Direction']}</span>
                     <span class="badge {out_cls}">{row['Outcome']}</span>
                     <span class="badge {rule_cls}">Rules: {row['Rule_Followed']} ({row['Checklist_Score']})</span>
-                    <span class="badge b-amber">{row['Mindset']}</span>
                     <span class="badge b-gray">{row['Partial_Booking']}</span>
                 </div>
                 """
@@ -468,7 +497,7 @@ def render_trade_list(sub_df, section_key):
                     <b>Entry:</b> {row['Entry_Price']} &nbsp;|&nbsp; <b>Exit:</b> {row['Exit_Price']} &nbsp;|&nbsp; <b>Comm:</b> ${row['Commission']}<br>
                     <b>SL:</b> {row['SL_Price']} &nbsp;|&nbsp; <b>TP:</b> {row['TP_Price']} &nbsp;|&nbsp; <b>Trail SL:</b> {row['Trailing_SL']}<br>
                     <b>MAE:</b> {row['MAE']} &nbsp;|&nbsp; <b>MFE:</b> {row['MFE']} &nbsp;|&nbsp; <b>RR:</b> {row['Planned_RR']}R &rarr; {row['Achieved_RR']}R<br>
-                    <b>Tag:</b> {row['Mistake_Tag']}
+                    <b>Tag:</b> {row['Mistake_Tag']} | <b>Mindset:</b> {row['Mindset']}
                 </div>
                 """
                 st.markdown(prices_html, unsafe_allow_html=True)
